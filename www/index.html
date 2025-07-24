@@ -651,6 +651,20 @@
                             </div>
                         </div>
                     </div>
+                    <div class="card mt-3">
+                <div class="card-header">Serial Command</div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col">
+                            <label>Command to Send</label>
+                            <div class="input-group">
+                                <input type="text" id="serial_command" class="form-control" placeholder="Enter command">
+                                <button type="button" class="btn btn-primary" onclick="sendSerialCommand()">Send</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
                     <div class="card mb-3">
                         <div class="card-header">
                             Admin (this page)
@@ -1137,5 +1151,32 @@
             </div>
         </div>
     </div>
+        <script>
+        function sendSerialCommand() {
+            const command = document.getElementById('serial_command').value;
+            if (command.trim() === '') {
+                alert('Please enter a command.');
+                return;
+            }
+            const sendButton = document.querySelector('.btn-primary');
+            sendButton.disabled = true;
+            $.ajax({
+                url: '/send_serial',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ command: command }),
+                success: function(response) {
+                    alert('Command sent successfully.');
+                    document.getElementById('serial_command').value = '';
+                },
+                error: function(xhr) {
+                    alert('Failed to send command: ' + (xhr.responseText || 'Unknown error'));
+                },
+                complete: function() {
+                    sendButton.disabled = false;
+                }
+            });
+        }
+    </script>
 </body>
 </html>

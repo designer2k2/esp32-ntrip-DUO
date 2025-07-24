@@ -35,6 +35,7 @@
 #include <lwip/sockets.h>
 #include <esp_timer.h>
 #include "web_server.h"
+#include "uart.h"
 
 // Max length a file path can have on storage
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN)
@@ -614,6 +615,48 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     return json_response(req, root);
 }
 
+static esp_err_t serial_post_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+
+    int ret = httpd_req_recv(req, buffer, BUFFER_SIZE - 1);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_408(req);
+        }
+        return ESP_FAIL;
+    }
+
+    buffer[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(buffer);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON format");
+        return ESP_FAIL;
+    }
+
+    const cJSON *command_item = cJSON_GetObjectItemCaseSensitive(root, "command");
+    if (cJSON_IsString(command_item) && (command_item->valuestring != NULL)) {
+        const char *command = command_item->valuestring;
+        ESP_LOGI(TAG, "Received serial command: %s", command);
+
+        // Append newline characters for the transmission
+        char* command_with_newline;
+        asprintf(&command_with_newline, "%s\r\n", command);
+
+        // *** Use the project's custom uart_write function ***
+        uart_write(command_with_newline, strlen(command_with_newline));
+
+        free(command_with_newline);
+
+        httpd_resp_send(req, "Command sent", HTTPD_RESP_USE_STRLEN);
+    } else {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing 'command' key in JSON");
+    }
+
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 static esp_err_t status_get_handler(httpd_req_t *req) {
     if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
 
@@ -769,6 +812,8 @@ static httpd_handle_t web_server_start(void)
         register_uri_handler(server, "/heap_info", HTTP_GET, heap_info_get_handler);
 
         register_uri_handler(server, "/wifi/scan", HTTP_GET, wifi_scan_get_handler);
+
+        register_uri_handler(server, "/send_serial", HTTP_POST, serial_post_handler);
 
         register_uri_handler(server, "/*", HTTP_GET, file_get_handler);
     }
