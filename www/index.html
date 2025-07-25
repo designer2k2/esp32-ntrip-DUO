@@ -651,20 +651,6 @@
                             </div>
                         </div>
                     </div>
-                    <div class="card mt-3">
-                <div class="card-header">Serial Command</div>
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col">
-                            <label>Command to Send</label>
-                            <div class="input-group">
-                                <input type="text" id="serial_command" class="form-control" placeholder="Enter command">
-                                <button type="button" class="btn btn-primary" onclick="sendSerialCommand()">Send</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
                     <div class="card mb-3">
                         <div class="card-header">
                             Admin (this page)
@@ -677,8 +663,7 @@
                                         <option value="0" selected>Open</option>
                                         <option value="1">Hotspot devices only</option>
                                         <option value="2">Username/password</option>
-                                        <!--<option value="3">Button press</option>-->
-                                    </select>
+                                        </select>
                                 </div>
                                 <div class="col-4">
                                     <label>Username</label>
@@ -691,42 +676,7 @@
                             </div>
                         </div>
                     </div>
-                    <!--
-                    <div class="card mb-3">
-                        <div class="card-header">
-                            Bluetooth
-                            <div class="custom-control custom-switch d-inline float-right">
-                                <input type="checkbox" name="bt_active" value="1" class="custom-control-input" id="switch-bluetooth">
-                                <label class="custom-control-label" for="switch-wifi-bluetooth"></label>
-                            </div>
-                        </div>
-                        <div class="card-body" data-disable-if="#switch-bluetooth">
-                            <div class="form-row mb-3">
-                                <div class="col-8">
-                                    <label>Device name</label>
-                                    <div class="input-group">
-                                        <input type="text" name="bt_dev_name" class="form-control" maxlength="32" required>
-                                        <div class="input-group-append btn-group-toggle" data-toggle="buttons">
-                                            <label class="btn btn-outline-secondary active">
-                                                <input type="checkbox" name="bt_dev_vis" value="1" checked> Discoverable
-                                            </label>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="col">
-                                    <label>Pin code</label>
-                                    <div class="input-group">
-                                        <input type="number" name="bt_pin_code" class="form-control text-center" maxlength="1" min="0" max="9" pattern="[0-9]" oninput="autoTab(this)" required/>
-                                        <input type="number" name="bt_pin_code" class="form-control text-center" maxlength="1" min="0" max="9" pattern="[0-9]" oninput="autoTab(this)" required/>
-                                        <input type="number" name="bt_pin_code" class="form-control text-center" maxlength="1" min="0" max="9" pattern="[0-9]" oninput="autoTab(this)" required/>
-                                        <input type="number" name="bt_pin_code" class="form-control text-center" maxlength="1" min="0" max="9" pattern="[0-9]" oninput="autoTab(this)" required/>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
                     </div>
-                    -->
-                </div>
                 <div class="col-xl-6">
                     <div class="card mb-3">
                         <div class="card-header">
@@ -929,6 +879,16 @@
                                     <input type="number" name="uart_cts_pin" data-disable-if="input[type='checkbox'][name='uart_fc_cts']" class="form-control" placeholder="19" value="19" required>
                                 </div>
                             </div>
+                            <hr class="my-4">
+                            <div class="row">
+                                <div class="col">
+                                    <label>Serial Command</label>
+                                    <div class="input-group">
+                                        <input type="text" id="serial_command" class="form-control" placeholder="Enter command">
+                                        <button type="button" class="btn btn-primary" onclick="sendSerialCommand()">Send</button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -969,20 +929,7 @@
                                     <label>Mountpoint</label>
                                     <div class="input-group">
                                         <input type="text" name="ntr_srv_mp" class="form-control" maxlength="32" required>
-                                        <!--<div class="input-group-append">
-                                            <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-toggle="dropdown"></button>
-                                            <div class="dropdown-menu">
-                                                <a class="dropdown-item" href="#">Action</a>
-                                                <a class="dropdown-item" href="#">Another action</a>
-                                                <a class="dropdown-item" href="#">Something else here</a>
-                                                <div role="separator" class="dropdown-divider"></div>
-                                                <a class="dropdown-item" href="#">Separated link</a>
-                                            </div>
                                         </div>
-                                        <div class="input-group-append">
-                                            <button type="button" class="btn btn-outline-secondary">Search</button>
-                                        </div>-->
-                                    </div>
                                 </div>
                             </div>
                             <div class="form-row mb-3">
@@ -1029,20 +976,7 @@
                                     <label>Mountpoint</label>
                                     <div class="input-group">
                                         <input type="text" name="ntr_srv2_mp" class="form-control" maxlength="32" required>
-                                        <!--<div class="input-group-append">
-                                            <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-toggle="dropdown"></button>
-                                            <div class="dropdown-menu">
-                                                <a class="dropdown-item" href="#">Action</a>
-                                                <a class="dropdown-item" href="#">Another action</a>
-                                                <a class="dropdown-item" href="#">Something else here</a>
-                                                <div role="separator" class="dropdown-divider"></div>
-                                                <a class="dropdown-item" href="#">Separated link</a>
-                                            </div>
                                         </div>
-                                        <div class="input-group-append">
-                                            <button type="button" class="btn btn-outline-secondary">Search</button>
-                                        </div>-->
-                                    </div>
                                 </div>
                             </div>
                             <div class="form-row mb-3">
@@ -1089,20 +1023,7 @@
                                     <label>Mountpoint</label>
                                     <div class="input-group">
                                         <input type="text" name="ntr_cli_mp" class="form-control" maxlength="32" required>
-                                        <!--<div class="input-group-append">
-                                            <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-toggle="dropdown"></button>
-                                            <div class="dropdown-menu">
-                                                <a class="dropdown-item" href="#">Action</a>
-                                                <a class="dropdown-item" href="#">Another action</a>
-                                                <a class="dropdown-item" href="#">Something else here</a>
-                                                <div role="separator" class="dropdown-divider"></div>
-                                                <a class="dropdown-item" href="#">Separated link</a>
-                                            </div>
                                         </div>
-                                        <div class="input-group-append">
-                                            <button type="button" class="btn btn-outline-secondary">Search</button>
-                                        </div>-->
-                                    </div>
                                 </div>
                             </div>
                             <div class="form-row mb-3">
