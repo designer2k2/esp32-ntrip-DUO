@@ -34,6 +34,7 @@
 #include <esp32/rom/crc.h>
 #include <lwip/sockets.h>
 #include <esp_timer.h>
+#include <esp_system.h>
 #include "web_server.h"
 #include "uart.h"
 
@@ -268,6 +269,130 @@ static esp_err_t core_dump_get_handler(httpd_req_t *req) {
 
     httpd_resp_send_chunk(req, NULL, 0);
 
+    return ESP_OK;
+}
+
+static esp_err_t ota_page_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+
+    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+
+    char html[2048];
+    snprintf(html, sizeof(html),
+        "<!DOCTYPE html><html><head><title>Firmware Update</title>"
+        "<style>body{font-family:sans-serif;max-width:500px;margin:40px auto;padding:0 20px}"
+        "button{padding:8px 16px;margin-top:10px;cursor:pointer}"
+        "#status{margin-top:16px;font-weight:bold}"
+        "#bar{width:100%%;height:20px;background:#eee;border-radius:4px;margin-top:8px;display:none}"
+        "#fill{height:100%%;width:0;background:#4caf50;border-radius:4px;transition:width 0.2s}"
+        "</style></head><body>"
+        "<h2>Firmware Update</h2>"
+        "<p>Running: <b>%s</b> on partition <b>%s</b></p>"
+        "<p>Update target: <b>%s</b></p>"
+        "<input type='file' id='f' accept='.bin'><br>"
+        "<button onclick='upload()'>Flash Firmware</button>"
+        "<div id='bar'><div id='fill'></div></div>"
+        "<div id='status'></div>"
+        "<script>"
+        "function upload(){"
+        "var f=document.getElementById('f').files[0];"
+        "if(!f){alert('Select a .bin file first');return;}"
+        "var s=document.getElementById('status');"
+        "var bar=document.getElementById('bar');"
+        "var fill=document.getElementById('fill');"
+        "bar.style.display='block';"
+        "s.textContent='Uploading '+f.name+' ('+f.size+' bytes)...';"
+        "var xhr=new XMLHttpRequest();"
+        "xhr.upload.onprogress=function(e){"
+        "if(e.lengthComputable){var p=Math.round(e.loaded/e.total*100);"
+        "fill.style.width=p+'%%';s.textContent='Uploading... '+p+'%%';}"
+        "};"
+        "xhr.onload=function(){"
+        "if(xhr.status==200){s.textContent='Done! Rebooting... reconnect in ~10 seconds.';fill.style.background='#4caf50';}"
+        "else{s.textContent='Error: '+xhr.responseText;fill.style.background='#f44336';}"
+        "};"
+        "xhr.onerror=function(){s.textContent='Upload failed (connection lost)';};"
+        "xhr.open('POST','/ota');"
+        "xhr.setRequestHeader('Content-Type','application/octet-stream');"
+        "xhr.send(f);"
+        "}"
+        "</script></body></html>",
+        app_desc->version,
+        running ? running->label : "unknown",
+        next ? next->label : "none - repartition required"
+    );
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req, html);
+    return ESP_OK;
+}
+
+static esp_err_t ota_upload_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+
+    const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
+    if (ota_partition == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                "No OTA partition found - partition table needs updating");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA update starting: %d bytes -> partition '%s'",
+            req->content_len, ota_partition->label);
+
+    esp_ota_handle_t ota_handle;
+    esp_err_t err = esp_ota_begin(ota_partition, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA begin failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        return ESP_FAIL;
+    }
+
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int to_read = MIN(remaining, BUFFER_SIZE);
+        int received = httpd_req_recv(req, buffer, to_read);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (received <= 0) {
+            ESP_LOGE(TAG, "OTA receive error: %d", received);
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+            return ESP_FAIL;
+        }
+        err = esp_ota_write(ota_handle, buffer, received);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "OTA write error: %s", esp_err_to_name(err));
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Flash write error");
+            return ESP_FAIL;
+        }
+        remaining -= received;
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA end failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                err == ESP_ERR_OTA_VALIDATE_FAILED
+                ? "Firmware validation failed - wrong chip or corrupt file?"
+                : "OTA finalise failed");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(ota_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Set boot partition failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to set boot partition");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA update successful, rebooting");
+    httpd_resp_sendstr(req, "OK");
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
     return ESP_OK;
 }
 
@@ -665,10 +790,29 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
     // Uptime
     cJSON_AddNumberToObject(root, "uptime", (int) ((double) esp_timer_get_time() / 1000000));
 
+    // Reset reason (why did the device last restart?)
+    const char *reset_reason_str;
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   reset_reason_str = "POWERON";            break;
+        case ESP_RST_EXT:       reset_reason_str = "EXTERNAL";           break;
+        case ESP_RST_SW:        reset_reason_str = "SOFTWARE";           break;
+        case ESP_RST_PANIC:     reset_reason_str = "PANIC";              break;
+        case ESP_RST_INT_WDT:   reset_reason_str = "INTERRUPT_WATCHDOG"; break;
+        case ESP_RST_TASK_WDT:  reset_reason_str = "TASK_WATCHDOG";      break;
+        case ESP_RST_WDT:       reset_reason_str = "OTHER_WATCHDOG";     break;
+        case ESP_RST_DEEPSLEEP: reset_reason_str = "DEEPSLEEP";          break;
+        case ESP_RST_BROWNOUT:  reset_reason_str = "BROWNOUT";           break;
+        default:                reset_reason_str = "UNKNOWN";            break;
+    }
+    cJSON_AddStringToObject(root, "reset_reason", reset_reason_str);
+    cJSON_AddBoolToObject(root, "core_dump_available", core_dump_available() > 0);
+
     // Heap
     cJSON *heap = cJSON_AddObjectToObject(root, "heap");
     cJSON_AddNumberToObject(heap, "total", heap_caps_get_total_size(MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(heap, "free", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(heap, "minimum_free", heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(heap, "largest_free_block", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     // Streams
     cJSON *streams = cJSON_AddObjectToObject(root, "streams");
@@ -799,7 +943,7 @@ static httpd_handle_t web_server_start(void)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 9;
+    config.max_uri_handlers = 11;
 
     // Start the httpd server
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
@@ -815,6 +959,9 @@ static httpd_handle_t web_server_start(void)
         register_uri_handler(server, "/wifi/scan", HTTP_GET, wifi_scan_get_handler);
 
         register_uri_handler(server, "/send_serial", HTTP_POST, serial_post_handler);
+
+        register_uri_handler(server, "/ota", HTTP_GET, ota_page_handler);
+        register_uri_handler(server, "/ota", HTTP_POST, ota_upload_handler);
 
         register_uri_handler(server, "/*", HTTP_GET, file_get_handler);
     }

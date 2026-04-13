@@ -31,7 +31,7 @@
 #include "util.h"
 #include "uart.h"
 
-static const char *TAG = "NTRIP_SERVER";
+static const char *TAG = "NTRIP_SERVER_2";
 
 #define BUFFER_SIZE 512
 
@@ -80,9 +80,19 @@ static void ntrip_server_uart_handler(void* handler_args, esp_event_base_t base,
 static void ntrip_server_sleep_task(void *ctx) {
     vTaskSuspend(NULL);
 
+    ESP_LOGI(TAG, "Sleep task stack high water mark: %d bytes remaining", uxTaskGetStackHighWaterMark(NULL) * 4);
+
     while (true) {
         // If wait time exceeded, clear data ready bit
-        if (data_keep_alive == NTRIP_KEEP_ALIVE_THRESHOLD) {
+        if (data_keep_alive >= NTRIP_KEEP_ALIVE_THRESHOLD) {
+            EventBits_t bits = xEventGroupGetBits(server_event_group);
+            if (bits & CASTER_READY_BIT) {
+                // Still connected but no UART data - force reconnect so we don't hold a stale connection
+                ESP_LOGW(TAG, "No data received by UART in %d seconds while connected, forcing reconnect", NTRIP_KEEP_ALIVE_THRESHOLD / 1000);
+                xEventGroupClearBits(server_event_group, CASTER_READY_BIT);
+                destroy_socket(&sock);
+                vTaskResume(server_task);
+            }
             xEventGroupClearBits(server_event_group, DATA_READY_BIT);
             ESP_LOGW(TAG, "No data received by UART in %d seconds, will not reconnect to caster if disconnected", NTRIP_KEEP_ALIVE_THRESHOLD / 1000);
         }
@@ -94,7 +104,7 @@ static void ntrip_server_sleep_task(void *ctx) {
 static void ntrip_server_task(void *ctx) {
     server_event_group = xEventGroupCreate();
     uart_register_read_handler(ntrip_server_uart_handler);
-    xTaskCreate(ntrip_server_sleep_task, "ntrip_server_sleep_task", 2048, NULL, TASK_PRIORITY_INTERFACE, &sleep_task);
+    xTaskCreate(ntrip_server_sleep_task, "ntrip_server_sleep_task", 4096, NULL, TASK_PRIORITY_INTERFACE, &sleep_task);
 
     config_color_t status_led_color = config_get_color(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_COLOR));
     if (status_led_color.rgba != 0) status_led = status_led_add(status_led_color.rgba, STATUS_LED_FADE, 500, 2000, 0);
@@ -127,6 +137,9 @@ static void ntrip_server_task(void *ctx) {
         config_get_str_blob_alloc(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_PASSWORD), (void **) &password);
         config_get_str_blob_alloc(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_MOUNTPOINT), (void **) &mountpoint);
 
+        ERROR_ACTION(TAG, host == NULL || password == NULL || mountpoint == NULL, goto _error,
+                "Could not read config from NVS (host=%s, mountpoint=%s)", host ? host : "NULL", mountpoint ? mountpoint : "NULL");
+
         ESP_LOGI(TAG, "Connecting to %s:%d/%s", host, port, mountpoint);
         uart_nmea("$PESP,NTRIP,SRV2,CONNECTING,%s:%d,%s", host, port, mountpoint);
         sock = connect_socket(host, port, SOCK_STREAM);
@@ -152,6 +165,7 @@ static void ntrip_server_task(void *ctx) {
         free(status);
 
         ESP_LOGI(TAG, "Successfully connected to %s:%d/%s", host, port, mountpoint);
+        ESP_LOGI(TAG, "Stack high water mark: %d bytes remaining", uxTaskGetStackHighWaterMark(NULL) * 4);
         uart_nmea("$PESP,NTRIP,SRV2,CONNECTED,%s:%d,%s", host, port, mountpoint);
 
         retry_reset(delay_handle);
@@ -187,5 +201,5 @@ static void ntrip_server_task(void *ctx) {
 void ntrip_server_2_init() {
     if (!config_get_bool1(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_ACTIVE))) return;
 
-    xTaskCreate(ntrip_server_task, "ntrip_server_task", 4096, NULL, TASK_PRIORITY_INTERFACE, &server_task);
+    xTaskCreate(ntrip_server_task, "ntrip_server_task", 8192, NULL, TASK_PRIORITY_INTERFACE, &server_task);
 }
