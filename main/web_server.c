@@ -34,7 +34,9 @@
 #include <esp32/rom/crc.h>
 #include <lwip/sockets.h>
 #include <esp_timer.h>
+#include <esp_system.h>
 #include "web_server.h"
+#include "uart.h"
 
 // Max length a file path can have on storage
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN)
@@ -270,6 +272,130 @@ static esp_err_t core_dump_get_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t ota_page_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+
+    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+
+    char html[2048];
+    snprintf(html, sizeof(html),
+        "<!DOCTYPE html><html><head><title>Firmware Update</title>"
+        "<style>body{font-family:sans-serif;max-width:500px;margin:40px auto;padding:0 20px}"
+        "button{padding:8px 16px;margin-top:10px;cursor:pointer}"
+        "#status{margin-top:16px;font-weight:bold}"
+        "#bar{width:100%%;height:20px;background:#eee;border-radius:4px;margin-top:8px;display:none}"
+        "#fill{height:100%%;width:0;background:#4caf50;border-radius:4px;transition:width 0.2s}"
+        "</style></head><body>"
+        "<h2>Firmware Update</h2>"
+        "<p>Running: <b>%s</b> on partition <b>%s</b></p>"
+        "<p>Update target: <b>%s</b></p>"
+        "<input type='file' id='f' accept='.bin'><br>"
+        "<button onclick='upload()'>Flash Firmware</button>"
+        "<div id='bar'><div id='fill'></div></div>"
+        "<div id='status'></div>"
+        "<script>"
+        "function upload(){"
+        "var f=document.getElementById('f').files[0];"
+        "if(!f){alert('Select a .bin file first');return;}"
+        "var s=document.getElementById('status');"
+        "var bar=document.getElementById('bar');"
+        "var fill=document.getElementById('fill');"
+        "bar.style.display='block';"
+        "s.textContent='Uploading '+f.name+' ('+f.size+' bytes)...';"
+        "var xhr=new XMLHttpRequest();"
+        "xhr.upload.onprogress=function(e){"
+        "if(e.lengthComputable){var p=Math.round(e.loaded/e.total*100);"
+        "fill.style.width=p+'%%';s.textContent='Uploading... '+p+'%%';}"
+        "};"
+        "xhr.onload=function(){"
+        "if(xhr.status==200){s.textContent='Done! Rebooting... reconnect in ~10 seconds.';fill.style.background='#4caf50';}"
+        "else{s.textContent='Error: '+xhr.responseText;fill.style.background='#f44336';}"
+        "};"
+        "xhr.onerror=function(){s.textContent='Upload failed (connection lost)';};"
+        "xhr.open('POST','/ota');"
+        "xhr.setRequestHeader('Content-Type','application/octet-stream');"
+        "xhr.send(f);"
+        "}"
+        "</script></body></html>",
+        app_desc->version,
+        running ? running->label : "unknown",
+        next ? next->label : "none - repartition required"
+    );
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req, html);
+    return ESP_OK;
+}
+
+static esp_err_t ota_upload_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+
+    const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
+    if (ota_partition == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                "No OTA partition found - partition table needs updating");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA update starting: %d bytes -> partition '%s'",
+            req->content_len, ota_partition->label);
+
+    esp_ota_handle_t ota_handle;
+    esp_err_t err = esp_ota_begin(ota_partition, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA begin failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        return ESP_FAIL;
+    }
+
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int to_read = MIN(remaining, BUFFER_SIZE);
+        int received = httpd_req_recv(req, buffer, to_read);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (received <= 0) {
+            ESP_LOGE(TAG, "OTA receive error: %d", received);
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+            return ESP_FAIL;
+        }
+        err = esp_ota_write(ota_handle, buffer, received);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "OTA write error: %s", esp_err_to_name(err));
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Flash write error");
+            return ESP_FAIL;
+        }
+        remaining -= received;
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA end failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                err == ESP_ERR_OTA_VALIDATE_FAILED
+                ? "Firmware validation failed - wrong chip or corrupt file?"
+                : "OTA finalise failed");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(ota_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Set boot partition failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to set boot partition");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA update successful, rebooting");
+    httpd_resp_sendstr(req, "OK");
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
 static esp_err_t heap_info_get_handler(httpd_req_t *req) {
     if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
 
@@ -339,6 +465,7 @@ static esp_err_t file_get_handler(httpd_req_t *req) {
 
     char file_path[FILE_PATH_MAX - strlen(FILE_HASH_SUFFIX)];
     char file_hash_path[FILE_PATH_MAX];
+    char gz_file_path[FILE_PATH_MAX + 4]; // extra space for ".gz" suffix
     FILE *fd = NULL, *fd_hash = NULL;
     struct stat file_stat;
 
@@ -352,70 +479,77 @@ static esp_err_t file_get_handler(httpd_req_t *req) {
     // If name has trailing '/', respond with index page
     if (file_name[strlen(file_name) - 1] == '/' && strlen(file_name) + strlen("index.html") < FILE_PATH_MAX) {
         strcpy(&file_name[strlen(file_name)], "index.html");
-
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     }
 
+    // Content type is always determined from the original filename (not .gz)
     set_content_type_from_file(req, file_name);
 
-    // Check if file exists
-    ERROR_ACTION(TAG, stat(file_path, &file_stat) == -1, {
-        httpd_resp_send_404(req);
-        return ESP_FAIL;
-    }, "Could not stat file %s", file_path)
+    // Try gzip-compressed version first - saves ~78% bandwidth and SPIFFS space
+    snprintf(gz_file_path, sizeof(gz_file_path), "%s.gz", file_path);
+    bool use_gz = (stat(gz_file_path, &file_stat) == 0);
 
-    // Check file hash (if matches request, file is not modified)
-    strcpy(file_hash_path, file_path);
-    strcpy(&file_hash_path[strlen(file_hash_path)], FILE_HASH_SUFFIX);
-    char etag[8 + 2 + 1] = ""; // Store CRC32, quotes and \0
-    if (file_check_etag_hash(req, file_hash_path, etag, sizeof(etag)) == ESP_OK) {
-        httpd_resp_set_status(req, "304 Not Modified");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
+    if (use_gz) {
+        httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    } else {
+        // Fall back to uncompressed
+        ERROR_ACTION(TAG, stat(file_path, &file_stat) == -1, {
+            httpd_resp_send_404(req);
+            return ESP_FAIL;
+        }, "Could not stat file %s", file_path)
     }
 
-    if (strlen(etag) > 0) httpd_resp_set_hdr(req, "ETag", etag);
+    const char *serve_path = use_gz ? gz_file_path : file_path;
 
-    fd = fopen(file_path, "r");
+    // Check file hash for browser caching (ETag) - only for uncompressed files
+    // to avoid buffer overflow from the combined .gz.crc suffix length
+    char etag[8 + 2 + 1] = "";
+    if (!use_gz) {
+        strcpy(file_hash_path, file_path);
+        strcpy(&file_hash_path[strlen(file_hash_path)], FILE_HASH_SUFFIX);
+        if (file_check_etag_hash(req, file_hash_path, etag, sizeof(etag)) == ESP_OK) {
+            httpd_resp_set_status(req, "304 Not Modified");
+            httpd_resp_send(req, NULL, 0);
+            return ESP_OK;
+        }
+        if (strlen(etag) > 0) httpd_resp_set_hdr(req, "ETag", etag);
+    }
+
+    fd = fopen(serve_path, "r");
     ERROR_ACTION(TAG, fd == NULL, {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not read file");
         return ESP_FAIL;
-    }, "Could not read file %s", file_path)
+    }, "Could not read file %s", serve_path)
 
-    ESP_LOGI(TAG, "Sending file %s (%ld bytes)...", file_name, file_stat.st_size);
+    ESP_LOGI(TAG, "Sending file %s (%ld bytes)%s", file_name, file_stat.st_size, use_gz ? " [gz]" : "");
 
-    // Retrieve the pointer to scratch buffer for temporary storage
     size_t length;
     uint32_t crc = 0;
     do {
-        // Read file in chunks into the scratch buffer
         length = fread(buffer, 1, BUFFER_SIZE, fd);
 
-        // Send the buffer contents as HTTP response chunk
         if (httpd_resp_send_chunk(req, buffer, length) != ESP_OK) {
             ESP_LOGE(TAG, "Failed sending file %s", file_name);
             httpd_resp_sendstr_chunk(req, NULL);
-
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
-
             fclose(fd);
             return ESP_FAIL;
         }
 
-        // Update checksum
         crc = crc32_le(crc, (const uint8_t *)buffer, length);
     } while (length != 0);
 
-    // Close file after sending complete
     fclose(fd);
 
-    // Store CRC hash
-    fd_hash = fopen(file_hash_path, "w");
-    if (fd_hash != NULL) {
-        fwrite(&crc, sizeof(crc), 1, fd_hash);
-        fclose(fd_hash);
-    } else {
-        ESP_LOGW(TAG, "Could not open hash file %s for writing: %d %s", file_hash_path, errno, strerror(errno));
+    // Store CRC hash for uncompressed files only
+    if (!use_gz) {
+        fd_hash = fopen(file_hash_path, "w");
+        if (fd_hash != NULL) {
+            fwrite(&crc, sizeof(crc), 1, fd_hash);
+            fclose(fd_hash);
+        } else {
+            ESP_LOGW(TAG, "Could not open hash file %s for writing: %d %s", file_hash_path, errno, strerror(errno));
+        }
     }
 
     return ESP_OK;
@@ -614,6 +748,48 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     return json_response(req, root);
 }
 
+static esp_err_t serial_post_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+
+    int ret = httpd_req_recv(req, buffer, BUFFER_SIZE - 1);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_408(req);
+        }
+        return ESP_FAIL;
+    }
+
+    buffer[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(buffer);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON format");
+        return ESP_FAIL;
+    }
+
+    const cJSON *command_item = cJSON_GetObjectItemCaseSensitive(root, "command");
+    if (cJSON_IsString(command_item) && (command_item->valuestring != NULL)) {
+        const char *command = command_item->valuestring;
+        ESP_LOGI(TAG, "Received serial command: %s", command);
+
+        // Append newline characters for the transmission
+        char* command_with_newline;
+        asprintf(&command_with_newline, "%s\r\n", command);
+
+        // *** Use the project's custom uart_write function ***
+        uart_write(command_with_newline, strlen(command_with_newline));
+
+        free(command_with_newline);
+
+        httpd_resp_send(req, "Command sent", HTTPD_RESP_USE_STRLEN);
+    } else {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing 'command' key in JSON");
+    }
+
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
 static esp_err_t status_get_handler(httpd_req_t *req) {
     if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
 
@@ -622,10 +798,29 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
     // Uptime
     cJSON_AddNumberToObject(root, "uptime", (int) ((double) esp_timer_get_time() / 1000000));
 
+    // Reset reason (why did the device last restart?)
+    const char *reset_reason_str;
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   reset_reason_str = "POWERON";            break;
+        case ESP_RST_EXT:       reset_reason_str = "EXTERNAL";           break;
+        case ESP_RST_SW:        reset_reason_str = "SOFTWARE";           break;
+        case ESP_RST_PANIC:     reset_reason_str = "PANIC";              break;
+        case ESP_RST_INT_WDT:   reset_reason_str = "INTERRUPT_WATCHDOG"; break;
+        case ESP_RST_TASK_WDT:  reset_reason_str = "TASK_WATCHDOG";      break;
+        case ESP_RST_WDT:       reset_reason_str = "OTHER_WATCHDOG";     break;
+        case ESP_RST_DEEPSLEEP: reset_reason_str = "DEEPSLEEP";          break;
+        case ESP_RST_BROWNOUT:  reset_reason_str = "BROWNOUT";           break;
+        default:                reset_reason_str = "UNKNOWN";            break;
+    }
+    cJSON_AddStringToObject(root, "reset_reason", reset_reason_str);
+    cJSON_AddBoolToObject(root, "core_dump_available", core_dump_available() > 0);
+
     // Heap
     cJSON *heap = cJSON_AddObjectToObject(root, "heap");
     cJSON_AddNumberToObject(heap, "total", heap_caps_get_total_size(MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(heap, "free", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(heap, "minimum_free", heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(heap, "largest_free_block", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     // Streams
     cJSON *streams = cJSON_AddObjectToObject(root, "streams");
@@ -756,6 +951,7 @@ static httpd_handle_t web_server_start(void)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
+    config.max_uri_handlers = 11;
 
     // Start the httpd server
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
@@ -769,6 +965,11 @@ static httpd_handle_t web_server_start(void)
         register_uri_handler(server, "/heap_info", HTTP_GET, heap_info_get_handler);
 
         register_uri_handler(server, "/wifi/scan", HTTP_GET, wifi_scan_get_handler);
+
+        register_uri_handler(server, "/send_serial", HTTP_POST, serial_post_handler);
+
+        register_uri_handler(server, "/ota", HTTP_GET, ota_page_handler);
+        register_uri_handler(server, "/ota", HTTP_POST, ota_upload_handler);
 
         register_uri_handler(server, "/*", HTTP_GET, file_get_handler);
     }

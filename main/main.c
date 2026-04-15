@@ -101,6 +101,8 @@ void app_main()
     ESP_LOGI(TAG, "╟──────────────────────────────────────────────╢");
     ESP_LOGI(TAG, "║ Author: Nebojša Cvetković                    ║");
     ESP_LOGI(TAG, "║ Source: https://github.com/nebkat/esp32-xbee ║");
+    ESP_LOGI(TAG, "║ Modified for dual NTRIP:                     ║");
+    ESP_LOGI(TAG, "║ https://github.com/incarvr6/esp32-ntrip-DUO  ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════════════╝");
 
     esp_event_loop_create_default();

@@ -146,6 +146,16 @@ int connect_socket(char *host, int port, int socktype) {
     err = setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
     if (err != 0) goto _opts_error;
 
+    // TCP keep-alive: detect dead connections even when no data is flowing
+    int keepalive = 1;
+    int keepidle = 10;    // start probing after 10s idle
+    int keepintvl = 5;    // probe interval 5s
+    int keepcnt = 3;      // 3 failed probes = connection dead (~25s total to detect)
+    setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
+
     // Reuse address
     int reuse = 1;
     err = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
