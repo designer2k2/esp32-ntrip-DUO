@@ -26,6 +26,7 @@
 #include <stream_stats.h>
 #include <freertos/event_groups.h>
 #include <esp_ota_ops.h>
+#include <esp_app_format.h>
 #include "interface/ntrip.h"
 #include "config.h"
 #include "util.h"
@@ -150,13 +151,14 @@ static void ntrip_server_task(void *ctx) {
 
         snprintf(buffer, BUFFER_SIZE, "SOURCE %s /%s" NEWLINE \
                 "Source-Agent: NTRIP %s/%s" NEWLINE \
-                NEWLINE, password, mountpoint, NTRIP_SERVER_NAME, &esp_ota_get_app_description()->version[1]);
+                NEWLINE, password, mountpoint, NTRIP_SERVER_NAME, &esp_app_get_description()->version[1]);
 
         int err = write(sock, buffer, strlen(buffer));
         ERROR_ACTION(TAG, err < 0, goto _error, "Could not send request to caster: %d %s", errno, strerror(errno));
 
         int len = read(sock, buffer, BUFFER_SIZE - 1);
-        ERROR_ACTION(TAG, len <= 0, goto _error, "Could not receive response from caster: %d %s", errno, strerror(errno));
+        ERROR_ACTION(TAG, len <= 0, goto _error, "Could not receive response from caster: %s",
+                (errno == EAGAIN || errno == EWOULDBLOCK) ? "Timed out waiting for response (10s)" : strerror(errno));
         buffer[len] = '\0';
 
         char *status = extract_http_header(buffer, "");

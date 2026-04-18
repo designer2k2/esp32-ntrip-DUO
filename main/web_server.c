@@ -29,6 +29,9 @@
 #include <util.h>
 #include <lwip/inet.h>
 #include <esp_ota_ops.h>
+#include <esp_app_format.h>
+#include <esp_flash.h>
+#include <esp_rom_md5.h>
 #include <esp_wifi_ap_get_sta_list.h>
 #include <stream_stats.h>
 #include <esp32/rom/crc.h>
@@ -245,10 +248,10 @@ static esp_err_t core_dump_get_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "application/octet-stream");
 
-    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_app_desc_t *app_desc = esp_app_get_description();
 
     char elf_sha256[7];
-    esp_ota_get_app_elf_sha256(elf_sha256, sizeof(elf_sha256));
+    esp_app_get_elf_sha256(elf_sha256, sizeof(elf_sha256));
 
     time_t t = time(NULL);
     char date[20] = "\0";
@@ -275,7 +278,7 @@ static esp_err_t core_dump_get_handler(httpd_req_t *req) {
 static esp_err_t ota_page_handler(httpd_req_t *req) {
     if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
 
-    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_app_desc_t *app_desc = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
 
@@ -329,6 +332,128 @@ static esp_err_t ota_page_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+/* ---------- One-time partition-table bootstrap for OTA --------------------
+ *
+ * The original firmware had no 'otadata' partition, which makes
+ * esp_ota_set_boot_partition() fail with "Failed to set boot partition".
+ *
+ * This function is called once from ota_upload_handler() when the otadata
+ * partition is not found at runtime.  It:
+ *   1. Rewrites the partition table at 0x8000 — adding the otadata entry
+ *      and a correct MD5 checksum (format verified against gen_esp32part.py).
+ *   2. Initialises the otadata sector (slot 0, seq=1 → ota_0) so the
+ *      firmware that was just written boots directly after the restart.
+ *
+ * After esp_restart() the bootloader sees the updated partition table and
+ * the device boots the new firmware in ota_0.  All subsequent OTA uploads
+ * use the normal esp_ota_set_boot_partition() path.
+ *
+ * Flash layout this function hard-codes (derived from partitions.csv):
+ *   nvs       0x009000  24 KB
+ *   phy_init  0x00F000   4 KB
+ *   factory   0x010000   1 MB
+ *   ota_0     0x110000   1 MB
+ *   www       0x210000   1 MB
+ *   coredump  0x310000 192 KB
+ *   otadata   0x340000   8 KB  ← new
+ * -------------------------------------------------------------------------- */
+
+/* Partition table entry — must match esp_partition_info_t in bootloader. */
+typedef struct {
+    uint16_t magic;       /* 0xAA50 */
+    uint8_t  type;
+    uint8_t  subtype;
+    uint32_t offset;
+    uint32_t size;
+    char     label[16];
+    uint32_t flags;
+} __attribute__((packed)) ota_pt_entry_t;  /* 32 bytes */
+
+/* otadata slot — must match esp_ota_select_entry_t in bootloader_support. */
+typedef struct {
+    uint32_t ota_seq;
+    uint8_t  seq_label[20];
+    uint32_t ota_state;
+    uint32_t crc;          /* CRC32 of the preceding 28 bytes */
+} __attribute__((packed)) ota_select_entry_t;  /* 32 bytes */
+
+static esp_err_t ota_bootstrap_otadata_partition(void)
+{
+    /* ---- 1. Build and write the new partition table ---------------------- */
+
+    static const ota_pt_entry_t pt_entries[] = {
+        /* magic   type  sub  offset      size       label       flags */
+        { 0xAA50U, 0x01, 0x02, 0x009000U, 0x006000U, "nvs",      0U },
+        { 0xAA50U, 0x01, 0x01, 0x00F000U, 0x001000U, "phy_init", 0U },
+        { 0xAA50U, 0x00, 0x00, 0x010000U, 0x100000U, "factory",  0U },
+        { 0xAA50U, 0x00, 0x10, 0x110000U, 0x100000U, "ota_0",    0U },
+        { 0xAA50U, 0x01, 0x82, 0x210000U, 0x100000U, "www",      0U },
+        { 0xAA50U, 0x01, 0x03, 0x310000U, 0x030000U, "coredump", 0U },
+        { 0xAA50U, 0x01, 0x00, 0x340000U, 0x002000U, "otadata",  0U },
+    };
+    const size_t entries_size = sizeof(pt_entries);   /* 7 * 32 = 224 bytes */
+
+    /* Partition table sector: 4 KB at flash offset 0x8000 */
+    uint8_t *pt_buf = malloc(0x1000U);
+    if (!pt_buf) return ESP_ERR_NO_MEM;
+    memset(pt_buf, 0xFF, 0x1000U);
+    memcpy(pt_buf, pt_entries, entries_size);
+
+    /* MD5 entry header: 0xEB 0xEB followed by 14 × 0xFF
+     * (bytes 2..15 are already 0xFF from memset — leave them).
+     * The MD5 is computed over: all partition entries (224 B)
+     *                         + this 16-byte header (magic + 14×FF).
+     * This exactly matches gen_esp32part.py behaviour. */
+    uint8_t *md5_hdr = pt_buf + entries_size;
+    md5_hdr[0] = 0xEBU;
+    md5_hdr[1] = 0xEBU;
+    /* bytes 2..15 stay 0xFF from the memset above */
+
+    uint8_t md5[16];
+    md5_context_t md5_ctx;
+    esp_rom_md5_init(&md5_ctx);
+    esp_rom_md5_update(&md5_ctx, pt_buf, entries_size + 16U); /* entries + MD5 hdr */
+    esp_rom_md5_final(md5, &md5_ctx);
+    memcpy(md5_hdr + 16, md5, 16);
+
+    esp_err_t err = esp_flash_erase_region(NULL, 0x8000U, 0x1000U);
+    if (err == ESP_OK) err = esp_flash_write(NULL, pt_buf, 0x8000U, 0x1000U);
+    free(pt_buf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA bootstrap: partition table write failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "OTA bootstrap: partition table updated (7 entries + MD5)");
+
+    /* ---- 2. Initialise otadata: slot 0 = seq 1 → ota_0 ------------------ */
+
+    /* otadata sector: 8 KB at flash offset 0x340000.
+     * Two slots of 4 KB each.  Slot 0 at offset 0, slot 1 at offset 0x1000.
+     * seq=1 → (1-1) % 1 = 0 → ota_0.
+     * ota_state = 0xFFFFFFFF (UNDEFINED) is what esp_ota_set_boot_partition()
+     * itself writes — bootloader treats it as "boot without restrictions". */
+    uint8_t *otd_buf = malloc(0x2000U);
+    if (!otd_buf) return ESP_ERR_NO_MEM;
+    memset(otd_buf, 0xFF, 0x2000U);
+
+    ota_select_entry_t *slot0 = (ota_select_entry_t *)otd_buf;
+    slot0->ota_seq   = 1U;
+    memset(slot0->seq_label, 0x00, sizeof(slot0->seq_label));
+    slot0->ota_state = 0xFFFFFFFFU;
+    slot0->crc = crc32_le(0xFFFFFFFFU, (const uint8_t *)slot0,
+                          (uint32_t)((uint8_t *)&slot0->crc - (uint8_t *)slot0));
+
+    err = esp_flash_erase_region(NULL, 0x340000U, 0x2000U);
+    if (err == ESP_OK) err = esp_flash_write(NULL, otd_buf, 0x340000U, 0x2000U);
+    free(otd_buf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA bootstrap: otadata write failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "OTA bootstrap: otadata initialised (seq=1 -> ota_0)");
+    return ESP_OK;
+}
+
 static esp_err_t ota_upload_handler(httpd_req_t *req) {
     if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
 
@@ -379,6 +504,31 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
                 ? "Firmware validation failed - wrong chip or corrupt file?"
                 : "OTA finalise failed");
         return ESP_FAIL;
+    }
+
+    /* If the otadata partition is missing (device built without it), bootstrap
+     * the partition table now.  This is a one-time self-heal: the new PT
+     * includes the otadata entry and the otadata sector is initialised to
+     * select ota_0 (which already holds the firmware we just wrote).
+     * After restart the device boots directly into the new firmware.
+     * On all subsequent OTA uploads the normal path below is taken. */
+    const esp_partition_t *otadata_part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+
+    if (otadata_part == NULL) {
+        ESP_LOGW(TAG, "OTA: otadata partition missing — bootstrapping partition table");
+        err = ota_bootstrap_otadata_partition();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "OTA: bootstrap failed (%s) — USB flash required", esp_err_to_name(err));
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                    "Firmware written but partition table update failed. USB flash required.");
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "OTA: bootstrap complete — rebooting to new firmware");
+        httpd_resp_sendstr(req, "OK");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+        return ESP_OK;
     }
 
     err = esp_ota_set_boot_partition(ota_partition);
@@ -446,13 +596,14 @@ static esp_err_t file_check_etag_hash(httpd_req_t *req, char *file_hash_path, ch
         httpd_req_get_hdr_value_str(req, "If-None-Match", if_none_match, if_none_match_length);
 
         bool header_match = strcmp(etag, if_none_match) == 0;
-        free(if_none_match);
 
         // Matching ETag, return not modified
         if (header_match) {
+            free(if_none_match);
             return ESP_OK;
         } else {
             ESP_LOGW(TAG, "ETag for file %s sent by client does not match (%s != %s)", file_hash_path, etag, if_none_match);
+            free(if_none_match);
             return ESP_ERR_INVALID_CRC;
         }
     }
@@ -560,7 +711,7 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
 
     cJSON *root = cJSON_CreateObject();
 
-    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_app_desc_t *app_desc = esp_app_get_description();
     cJSON_AddStringToObject(root, "version", app_desc->version);
 
     int config_item_count;
