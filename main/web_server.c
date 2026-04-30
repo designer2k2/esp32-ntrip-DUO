@@ -72,7 +72,7 @@ static esp_err_t www_spiffs_init() {
             .base_path = WWW_PARTITION_PATH,
             .partition_label = WWW_PARTITION_LABEL,
             .max_files = 10,
-            .format_if_mount_failed = false
+            .format_if_mount_failed = true
     };
 
     esp_err_t ret = esp_vfs_spiffs_register(&conf);
@@ -516,6 +516,16 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
             ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
 
     if (otadata_part == NULL) {
+        /* Safety check: the bootstrap hard-codes otadata pointing to ota_0.
+         * If the firmware somehow landed in a different slot, booting would
+         * start the wrong image — refuse and require USB flash instead. */
+        if (ota_partition->subtype != ESP_PARTITION_SUBTYPE_APP_OTA_0) {
+            ESP_LOGE(TAG, "OTA: bootstrap unsafe — target subtype 0x%02x is not ota_0",
+                    ota_partition->subtype);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                    "Firmware written but partition table bootstrap is unsafe: target is not ota_0. USB flash required.");
+            return ESP_FAIL;
+        }
         ESP_LOGW(TAG, "OTA: otadata partition missing — bootstrapping partition table");
         err = ota_bootstrap_otadata_partition();
         if (err != ESP_OK) {
@@ -526,7 +536,7 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
         }
         ESP_LOGI(TAG, "OTA: bootstrap complete — rebooting to new firmware");
         httpd_resp_sendstr(req, "OK");
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(1500));
         esp_restart();
         return ESP_OK;
     }
@@ -628,7 +638,7 @@ static esp_err_t file_get_handler(httpd_req_t *req) {
     }, "Filename too long")
 
     // If name has trailing '/', respond with index page
-    if (file_name[strlen(file_name) - 1] == '/' && strlen(file_name) + strlen("index.html") < FILE_PATH_MAX) {
+    if (strlen(file_name) > 0 && file_name[strlen(file_name) - 1] == '/' && strlen(file_name) + strlen("index.html") < FILE_PATH_MAX) {
         strcpy(&file_name[strlen(file_name)], "index.html");
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     }
@@ -849,7 +859,6 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
                     for (int b = 0; b < 4; b++) {
                         a[b] = (uint8_t) strtoul(cJSON_GetArrayItem(entry, b)->valuestring, NULL, 10);
                     }
-;
                     uint32_t ip = esp_netif_htonl(esp_netif_ip4_makeu32(a[0], a[1], a[2], a[3]));
                     err = config_set_u32(item.key, ip);
                 }
@@ -1099,6 +1108,12 @@ static httpd_handle_t web_server_start(void)
         free(password);
     }
 
+    buffer = malloc(BUFFER_SIZE);
+    if (buffer == NULL) {
+        ESP_LOGE(TAG, "Could not allocate HTTP response buffer");
+        return NULL;
+    }
+
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
@@ -1129,8 +1144,6 @@ static httpd_handle_t web_server_start(void)
         ESP_LOGE(TAG, "Could not start server");
         return NULL;
     }
-
-    buffer = malloc(BUFFER_SIZE);
 
     return server;
 }

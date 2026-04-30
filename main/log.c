@@ -42,21 +42,40 @@ esp_err_t log_init() {
     return ESP_OK;
 }
 
-int log_vprintf(const char * format, va_list arg) {
+int log_vprintf(const char *format, va_list arg) {
     char buffer[512];
-    int n = vsnprintf(buffer, 512, format, arg);
+    int n = vsnprintf(buffer, sizeof(buffer), format, arg);
+    if (n <= 0) return n;
+    if (n >= (int)sizeof(buffer)) n = (int)sizeof(buffer) - 1;
 
-    if (n > 512) {
-        n = 512;
+    /* Strip ANSI escape codes before sending to the web log ring buffer.
+     * All ESP-IDF color prefixes follow the pattern "\033[...m" — scan past
+     * the first 'm' rather than assuming a fixed length (avoids underflow when
+     * colours are disabled or the message is very short). */
+    const char *start = buffer;
+    int len = n;
+
+    if (len > 2 && start[0] == '\033' && start[1] == '[') {
+        const char *m = memchr(start + 2, 'm', (size_t)(len - 2));
+        if (m != NULL) {
+            int skip = (int)(m - start) + 1;
+            start += skip;
+            len   -= skip;
+        }
     }
 
-    // Remove log colors for web log buffer
-    xRingbufferSend(ringbuf_handle, buffer + strlen(LOG_COLOR_E),
-            n - strlen(LOG_COLOR_E) - strlen(LOG_RESET_COLOR) - 1, 0);
+    /* Strip trailing LOG_RESET_COLOR ("\033[0m") and newline if present. */
+    static const int reset_len = sizeof(LOG_RESET_COLOR) - 1;
+    if (len > reset_len &&
+        memcmp(start + len - reset_len, LOG_RESET_COLOR, (size_t)reset_len) == 0) {
+        len -= reset_len;
+    }
+    if (len > 0 && start[len - 1] == '\n') len--;
+
+    if (len > 0) xRingbufferSend(ringbuf_handle, start, (size_t)len, 0);
     xRingbufferSend(ringbuf_handle, "\n", 1, 0);
 
     uart_log(buffer, n);
-
     return n;
 }
 

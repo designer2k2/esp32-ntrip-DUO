@@ -155,6 +155,7 @@ void app_main()
         heap_caps_get_info(&info, MALLOC_CAP_DEFAULT);
 
         uint32_t total = info.total_allocated_bytes + info.total_free_bytes;
+        if (total == 0) continue;  // guard against divide-by-zero on very early boot
         uint32_t free_pct = 100 * info.total_free_bytes / total;
 
         ESP_LOGI(TAG, "Heap: %"PRIu32" free / %"PRIu32" total (%"PRIu32"%%), min free: %"PRIu32"",
