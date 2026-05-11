@@ -1,0 +1,40 @@
+name: www integrity check
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'www/**'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'www/**'
+
+jobs:
+  gz-check:
+    name: Every www/ file must have a .gz companion
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for missing .gz files
+        run: |
+          missing=0
+          for f in www/*; do
+            # skip directories and files that are already .gz
+            [ -d "$f" ] && continue
+            [[ "$f" == *.gz ]] && continue
+            if [ ! -f "${f}.gz" ]; then
+              echo "MISSING .gz for: $f"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ $missing -gt 0 ]; then
+            echo ""
+            echo "ERROR: $missing file(s) in www/ are missing a .gz companion."
+            echo "Run: gzip -k <file>  to create the compressed version."
+            exit 1
+          fi
+          echo "OK: all www/ files have a .gz companion."
