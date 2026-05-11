@@ -37,6 +37,19 @@ SAVECONFIG
 
 ---
 
+## Pre-built firmware
+
+The `firmware/` folder contains ready-to-flash binaries for ESP32:
+
+| File | Use for |
+|------|---------|
+| `ESP32-NTRIP-DUO-flash.bin` | **First-time flash** — full image (bootloader + partition table + firmware + web UI). Use with ESPHome web flasher or `esptool.py`. |
+| `ESP32-NTRIP-DUO-ota.bin` | **OTA updates** — app binary only. Upload at `http://<device-ip>/ota` after the first flash. |
+
+> **Important:** always use the matching pair. Do not OTA-flash the full `flash.bin` — it will fail validation. Do not first-flash with the `ota.bin` alone — it is missing the bootloader and partition table.
+
+---
+
 ## Build & Flash
 
 **Requirements:** [ESP-IDF v5.4.x](https://docs.espressif.com/projects/esp-idf/en/v5.4/esp32/get-started/)
@@ -45,27 +58,24 @@ SAVECONFIG
 
 ```cmd
 idf.py build
+idf.py merge-bin -o firmware\ESP32-NTRIP-DUO-flash.bin
 ```
 
-This produces two files you'll need:
-- `build/esp32-xbee.bin` — app binary (used for OTA updates)
-- `build/merged-flash.bin` — full image for first-time flashing (see below)
+Output files:
+| File | Use for |
+|------|---------|
+| `build\esp32-xbee.bin` | OTA updates via `http://<device-ip>/ota` |
+| `firmware\ESP32-NTRIP-DUO-flash.bin` | First-time flash via ESPHome or esptool |
 
-To build the merged image for first-time flashing:
-```cmd
-idf.py merge-bin -o build/merged-flash.bin
-```
+### First-time flash — ESPHome Web Flasher (no tools required)
 
-### First-time flash (ESPHome Web Flasher — no tools required)
+1. Open [https://web.esphome.io](https://web.esphome.io) in Chrome or Edge
+2. Connect the ESP32 via USB, click **Connect**, select the COM port
+3. Click **Install**, select `firmware\ESP32-NTRIP-DUO-flash.bin`
 
-1. Build the merged binary above
-2. Open [https://web.esphome.io](https://web.esphome.io) in Chrome or Edge
-3. Connect the ESP32 via USB, click **Connect**, select the COM port
-4. Click **Install**, select `build/merged-flash.bin`
+Flashes bootloader + partition table + firmware + web UI in one step.
 
-This flashes bootloader + partition table + firmware + web UI in one step.
-
-### First-time flash (idf.py — requires ESP-IDF installed)
+### First-time flash — idf.py (requires ESP-IDF)
 
 ```cmd
 idf.py flash
@@ -73,7 +83,7 @@ idf.py flash
 
 ### OTA updates (after first flash — no USB required)
 
-Go to `http://<device-ip>/ota` and upload `build/esp32-xbee.bin`.
+Go to `http://<device-ip>/ota` and upload `build\esp32-xbee.bin`.
 
 ---
 

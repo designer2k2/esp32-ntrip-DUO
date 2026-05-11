@@ -1,2 +1,4 @@
 /build
 /.vscode
+/.claude
+esp32_xbee_*_core_dump_*.bin
