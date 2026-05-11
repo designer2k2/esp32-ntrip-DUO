@@ -28,23 +28,7 @@ jobs:
           # Only lint files changed in the PR/push (not the whole repo every time)
           VALIDATE_ALL_CODEBASE: false
 
-          # --- Enabled linters ---
+          # Whitelist mode: only linters set to true run; all others are ignored.
+          # Do NOT mix true and false entries — Super Linter forbids it.
           VALIDATE_YAML: true        # GitHub Actions workflow files
           VALIDATE_MARKDOWN: true    # README.md, CLAUDE.md
-
-          # --- Explicitly disabled ---
-          # C/H: ESP-IDF has its own conventions; would need a .clang-format config
-          VALIDATE_C: false
-          # CMake: ESP-IDF cmake patterns don't match standard cmake-lint rules
-          VALIDATE_CMAKE: false
-          # Web files are all minified vendor bundles (jQuery, Bootstrap)
-          VALIDATE_HTML: false
-          VALIDATE_CSS: false
-          VALIDATE_JAVASCRIPT_ES: false
-          VALIDATE_JAVASCRIPT_STANDARD: false
-          VALIDATE_JAVASCRIPT_PRETTIER: false
-          # Bash in this repo is only inline inside YAML files — not standalone .sh
-          VALIDATE_BASH: false
-          VALIDATE_BASH_EXEC: false
-          # Natural language spell checking: too noisy for technical GNSS/NTRIP docs
-          VALIDATE_NATURAL_LANGUAGE: false
