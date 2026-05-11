@@ -25,7 +25,9 @@
 #include <retry.h>
 #include <stream_stats.h>
 #include <freertos/event_groups.h>
+#include <freertos/semphr.h>
 #include <esp_ota_ops.h>
+#include <esp_app_format.h>
 #include "interface/ntrip.h"
 #include "config.h"
 #include "util.h"
@@ -40,6 +42,7 @@ static const int DATA_READY_BIT = BIT1;
 static const int DATA_SENT_BIT = BIT2;
 
 static int sock = -1;
+static SemaphoreHandle_t sock_mutex = NULL;
 
 static int data_keep_alive;
 static EventGroupHandle_t server_event_group;
@@ -68,9 +71,19 @@ static void ntrip_server_uart_handler(void* handler_args, esp_event_base_t base,
     // Caster is connected and some data will be sent
     if ((event_bits & DATA_SENT_BIT) == 0) xEventGroupSetBits(server_event_group, DATA_SENT_BIT);
 
-    int sent = write(sock, buffer, length);
+    /* Snapshot the fd under the mutex — the actual write runs outside it
+     * because SO_SNDTIMEO can make write() block for up to 10 s. */
+    xSemaphoreTake(sock_mutex, portMAX_DELAY);
+    int current_sock = sock;
+    xSemaphoreGive(sock_mutex);
+
+    if (current_sock < 0) return;  // sleep task already closed it
+
+    int sent = write(current_sock, buffer, length);
     if (sent < 0) {
-        destroy_socket(&sock);
+        xSemaphoreTake(sock_mutex, portMAX_DELAY);
+        if (sock == current_sock) destroy_socket(&sock);  // avoid double-close
+        xSemaphoreGive(sock_mutex);
         vTaskResume(server_task);
     } else {
         stream_stats_increment(stream_stats, 0, sent);
@@ -90,7 +103,9 @@ static void ntrip_server_sleep_task(void *ctx) {
                 // Still connected but no UART data - force reconnect so we don't hold a stale connection
                 ESP_LOGW(TAG, "No data received by UART in %d seconds while connected, forcing reconnect", NTRIP_KEEP_ALIVE_THRESHOLD / 1000);
                 xEventGroupClearBits(server_event_group, CASTER_READY_BIT);
+                xSemaphoreTake(sock_mutex, portMAX_DELAY);
                 destroy_socket(&sock);
+                xSemaphoreGive(sock_mutex);
                 vTaskResume(server_task);
             }
             xEventGroupClearBits(server_event_group, DATA_READY_BIT);
@@ -102,6 +117,7 @@ static void ntrip_server_sleep_task(void *ctx) {
 }
 
 static void ntrip_server_task(void *ctx) {
+    sock_mutex = xSemaphoreCreateMutex();
     server_event_group = xEventGroupCreate();
     uart_register_read_handler(ntrip_server_uart_handler);
     xTaskCreate(ntrip_server_sleep_task, "ntrip_server_sleep_task", 4096, NULL, TASK_PRIORITY_INTERFACE, &sleep_task);
@@ -110,7 +126,7 @@ static void ntrip_server_task(void *ctx) {
     if (status_led_color.rgba != 0) status_led = status_led_add(status_led_color.rgba, STATUS_LED_FADE, 500, 2000, 0);
     if (status_led != NULL) status_led->active = false;
 
-    stream_stats = stream_stats_new("ntrip_server");
+    stream_stats = stream_stats_new("ntrip_server_2");
 
     retry_delay_handle_t delay_handle = retry_init(true, 5, 2000, 0);
 
@@ -131,7 +147,7 @@ static void ntrip_server_task(void *ctx) {
         char *buffer = NULL;
 
         char *host, *mountpoint, *password;
-        uint16_t port = config_get_u16(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_PORT));
+        uint16_t port = 0;
         config_get_primitive(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_PORT), &port);
         config_get_str_blob_alloc(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_HOST), (void **) &host);
         config_get_str_blob_alloc(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_PASSWORD), (void **) &password);
@@ -145,18 +161,20 @@ static void ntrip_server_task(void *ctx) {
         sock = connect_socket(host, port, SOCK_STREAM);
         ERROR_ACTION(TAG, sock == CONNECT_SOCKET_ERROR_RESOLVE, goto _error, "Could not resolve host");
         ERROR_ACTION(TAG, sock == CONNECT_SOCKET_ERROR_CONNECT, goto _error, "Could not connect to host");
+        ERROR_ACTION(TAG, sock < 0, goto _error, "Could not configure socket options");
 
         buffer = malloc(BUFFER_SIZE);
 
         snprintf(buffer, BUFFER_SIZE, "SOURCE %s /%s" NEWLINE \
                 "Source-Agent: NTRIP %s/%s" NEWLINE \
-                NEWLINE, password, mountpoint, NTRIP_SERVER_NAME, &esp_ota_get_app_description()->version[1]);
+                NEWLINE, password, mountpoint, NTRIP_SERVER_NAME, &esp_app_get_description()->version[1]);
 
         int err = write(sock, buffer, strlen(buffer));
         ERROR_ACTION(TAG, err < 0, goto _error, "Could not send request to caster: %d %s", errno, strerror(errno));
 
         int len = read(sock, buffer, BUFFER_SIZE - 1);
-        ERROR_ACTION(TAG, len <= 0, goto _error, "Could not receive response from caster: %d %s", errno, strerror(errno));
+        ERROR_ACTION(TAG, len <= 0, goto _error, "Could not receive response from caster: %s",
+                (errno == EAGAIN || errno == EWOULDBLOCK) ? "Timed out waiting for response (10s)" : strerror(errno));
         buffer[len] = '\0';
 
         char *status = extract_http_header(buffer, "");
@@ -189,7 +207,9 @@ static void ntrip_server_task(void *ctx) {
         _error:
         vTaskSuspend(sleep_task);
 
+        xSemaphoreTake(sock_mutex, portMAX_DELAY);
         destroy_socket(&sock);
+        xSemaphoreGive(sock_mutex);
 
         free(buffer);
         free(host);
@@ -201,5 +221,5 @@ static void ntrip_server_task(void *ctx) {
 void ntrip_server_2_init() {
     if (!config_get_bool1(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_ACTIVE))) return;
 
-    xTaskCreate(ntrip_server_task, "ntrip_server_task", 8192, NULL, TASK_PRIORITY_INTERFACE, &server_task);
+    xTaskCreate(ntrip_server_task, "ntrip_server_2_task", 8192, NULL, TASK_PRIORITY_INTERFACE, &server_task);
 }

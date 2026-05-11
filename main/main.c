@@ -18,10 +18,12 @@
 #include <web_server.h>
 #include <log.h>
 #include <status_led.h>
+#include <inttypes.h>
 
 #include <esp_sntp.h>
 #include <core_dump.h>
 #include <esp_ota_ops.h>
+#include <esp_app_format.h>
 #include <stream_stats.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -84,9 +86,9 @@ void app_main()
 
     esp_reset_reason_t reset_reason = esp_reset_reason();
 
-    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_app_desc_t *app_desc = esp_app_get_description();
     char elf_buffer[17];
-    esp_ota_get_app_elf_sha256(elf_buffer, sizeof(elf_buffer));
+    esp_app_get_elf_sha256(elf_buffer, sizeof(elf_buffer));
 
     uart_nmea("$PESP,INIT,START,%s,%s", app_desc->version, reset_reason_name(reset_reason));
 
@@ -139,24 +141,34 @@ void app_main()
 
     wait_for_ip();
 
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
     sntp_set_sync_mode(SNTP_SYNC_MODE_SMOOTH);
     sntp_set_time_sync_notification_cb(sntp_time_set_handler);
-    sntp_init();
+    esp_sntp_init();
 
-#ifdef DEBUG_HEAP
+    // Heap watchdog: log every 60s, auto-restart if critically low
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(60000));
 
         multi_heap_info_t info;
         heap_caps_get_info(&info, MALLOC_CAP_DEFAULT);
 
-        uart_nmea("$PESP,HEAP,FREE,%d/%d,%d%%", info.total_free_bytes,
-                info.total_allocated_bytes + info.total_free_bytes,
-                100 * info.total_free_bytes / (info.total_allocated_bytes + info.total_free_bytes));
+        uint32_t total = info.total_allocated_bytes + info.total_free_bytes;
+        if (total == 0) continue;  // guard against divide-by-zero on very early boot
+        uint32_t free_pct = 100 * info.total_free_bytes / total;
+
+        ESP_LOGI(TAG, "Heap: %"PRIu32" free / %"PRIu32" total (%"PRIu32"%%), min free: %"PRIu32"",
+                (uint32_t)info.total_free_bytes, total, free_pct,
+                (uint32_t)info.minimum_free_bytes);
+
+        if (info.total_free_bytes < 20000) {
+            ESP_LOGE(TAG, "Heap critically low (%"PRIu32" bytes free), restarting to prevent lockup",
+                    (uint32_t)info.total_free_bytes);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_restart();
+        }
     }
-#endif
 }
 
 static char *reset_reason_name(esp_reset_reason_t reason) {
