@@ -64,13 +64,15 @@ int log_vprintf(const char *format, va_list arg) {
         }
     }
 
-    /* Strip trailing LOG_RESET_COLOR ("\033[0m") and newline if present. */
+    /* Strip trailing newline first, then LOG_RESET_COLOR ("\033[0m").
+     * The buffer ends with "...\033[0m\n" so the newline must come off
+     * before the memcmp can match the reset sequence. */
+    if (len > 0 && start[len - 1] == '\n') len--;
     static const int reset_len = sizeof(LOG_RESET_COLOR) - 1;
     if (len > reset_len &&
         memcmp(start + len - reset_len, LOG_RESET_COLOR, (size_t)reset_len) == 0) {
         len -= reset_len;
     }
-    if (len > 0 && start[len - 1] == '\n') len--;
 
     if (len > 0) xRingbufferSend(ringbuf_handle, start, (size_t)len, 0);
     xRingbufferSend(ringbuf_handle, "\n", 1, 0);
