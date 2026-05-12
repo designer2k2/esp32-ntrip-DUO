@@ -27,6 +27,8 @@ Based on [nebkat/esp32-xbee](https://github.com/nebkat/esp32-xbee), heavily modi
 | UART | TX GPIO1, RX GPIO3 (default) |
 | LED (optional) | GPIO21 Red, GPIO22 Green, GPIO23 Blue (common anode, active low) |
 
+![Wiring diagram](docs/wiring.svg)
+
 **Power supply note:** The ESP32 and UM980 share a 5 V rail. Add a 470 µF + 100 nF capacitor across the 5 V rail at the UM980 power pins to prevent voltage sag during WiFi TX spikes.
 
 **UM980 setup:** The receiver must be configured in BASE mode before RTCM output is available:
