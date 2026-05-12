@@ -3,8 +3,22 @@ name: Build
 on:
   push:
     branches: [master]
+    paths:
+      - 'main/**'
+      - 'button/**'
+      - 'www/**'
+      - 'partitions.csv'
+      - 'CMakeLists.txt'
+      - 'sdkconfig'
   pull_request:
     branches: [master]
+    paths:
+      - 'main/**'
+      - 'button/**'
+      - 'www/**'
+      - 'partitions.csv'
+      - 'CMakeLists.txt'
+      - 'sdkconfig'
 
 jobs:
   build:
