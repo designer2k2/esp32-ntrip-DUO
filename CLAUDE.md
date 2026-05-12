@@ -24,6 +24,7 @@ idf.py flash   # USB only — used for initial flash or partition table changes
 ```
 
 OTA updates (normal workflow after initial flash):
+
 - Build → `build\esp32-xbee.bin`
 - Upload at `http://<device-ip>/ota`
 
@@ -47,7 +48,7 @@ OTA updates (normal workflow after initial flash):
 
 ## Source layout
 
-```
+```text
 main/
   main.c                  — app_main, heap watchdog (60s monitor, restart <20KB free)
   wifi.c                  — WiFi STA/AP, reconnect logic
@@ -96,7 +97,7 @@ www/
 
 ### NTRIP server flow
 
-```
+```text
 UART data → ntrip_server_uart_handler()
               └─ sets DATA_READY_BIT
               └─ writes to socket if CASTER_READY_BIT set
@@ -117,6 +118,7 @@ ntrip_server_sleep_task (loop):
 ### Socket handling (`util.c`)
 
 `connect_socket()` sets these options on every socket:
+
 - `SO_RCVTIMEO` / `SO_SNDTIMEO` = 10s (EAGAIN = "Timed out waiting for response (10s)")
 - `SO_KEEPALIVE` + `TCP_KEEPIDLE=10` + `TCP_KEEPINTVL=5` + `TCP_KEEPCNT=3`
 - `SO_REUSEADDR`

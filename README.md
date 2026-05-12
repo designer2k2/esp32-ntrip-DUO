@@ -30,7 +30,8 @@ Based on [nebkat/esp32-xbee](https://github.com/nebkat/esp32-xbee), heavily modi
 **Power supply note:** The ESP32 and UM980 share a 5 V rail. Add a 470 µF + 100 nF capacitor across the 5 V rail at the UM980 power pins to prevent voltage sag during WiFi TX spikes.
 
 **UM980 setup:** The receiver must be configured in BASE mode before RTCM output is available:
-```
+
+```text
 MODE BASE
 SAVECONFIG
 ```
@@ -64,6 +65,7 @@ idf.py merge-bin -o firmware\ESP32-NTRIP-DUO-flash.bin
 ```
 
 Output files:
+
 | File | Use for |
 |------|---------|
 | `build\esp32-xbee.bin` | OTA updates via `http://<device-ip>/ota` |
@@ -123,6 +125,7 @@ Since the device is typically deployed without serial access:
 | `http://<ip>/ota` | OTA firmware update page |
 
 Analyse a core dump:
+
 ```cmd
 idf.py coredump-info -c core_dump.bin
 ```
