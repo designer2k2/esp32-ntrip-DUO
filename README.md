@@ -39,14 +39,16 @@ SAVECONFIG
 
 ## Pre-built firmware
 
-The `firmware/` folder contains ready-to-flash binaries for ESP32:
+**Use the [latest release](https://github.com/designer2k2/esp32-ntrip-DUO/releases/latest)** — binaries are built automatically by CI and attached to every release:
 
 | File | Use for |
 |------|---------|
 | `ESP32-NTRIP-DUO-flash.bin` | **First-time flash** — full image (bootloader + partition table + firmware + web UI). Use with ESPHome web flasher or `esptool.py`. |
 | `ESP32-NTRIP-DUO-ota.bin` | **OTA updates** — app binary only. Upload at `http://<device-ip>/ota` after the first flash. |
 
-> **Important:** always use the matching pair. Do not OTA-flash the full `flash.bin` — it will fail validation. Do not first-flash with the `ota.bin` alone — it is missing the bootloader and partition table.
+> **Important:** always use the matching pair from the same release. Do not OTA-flash the full `flash.bin` — it will fail validation. Do not first-flash with the `ota.bin` alone — it is missing the bootloader and partition table.
+
+The `firmware/` folder in the repository tracks the last manually committed build and may lag behind the latest release.
 
 ---
 
