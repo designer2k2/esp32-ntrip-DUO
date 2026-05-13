@@ -282,6 +282,9 @@ static esp_err_t ota_page_handler(httpd_req_t *req) {
     const esp_app_desc_t *app_desc = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+    if (next == running) {
+        next = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+    }
 
     char html[2048];
     snprintf(html, sizeof(html),
@@ -463,6 +466,22 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                 "No OTA partition found - partition table needs updating");
         return ESP_FAIL;
+    }
+
+    // With only one OTA slot (ota_0), esp_ota_get_next_update_partition()
+    // returns ota_0 even when that IS the running partition — esp_ota_begin()
+    // would fail with ESP_ERR_OTA_PARTITION_CONFLICT.  Fall back to the
+    // factory partition so OTA alternates: factory → ota_0 → factory → ...
+    const esp_partition_t *running_part = esp_ota_get_running_partition();
+    if (ota_partition == running_part) {
+        ota_partition = esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+                ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+        if (ota_partition == NULL) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                    "Running partition is the only OTA slot and no factory partition found");
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "OTA: running from ota_0, writing to factory partition");
     }
 
     ESP_LOGI(TAG, "OTA update starting: %d bytes -> partition '%s'",
