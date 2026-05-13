@@ -156,6 +156,12 @@ int connect_socket(char *host, int port, int socktype) {
     setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
     setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
 
+    // Disable Nagle's algorithm: send each write immediately without buffering.
+    // RTCM messages are small (~100-200 bytes) — without this they sit in the
+    // TCP send buffer waiting for more data, adding 40-200ms of latency.
+    int nodelay = 1;
+    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
     // Reuse address
     int reuse = 1;
     err = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));

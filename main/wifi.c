@@ -404,6 +404,12 @@ void wifi_init() {
     }
 
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Disable WiFi power saving. Default WIFI_PS_MIN_MODEM sleeps the radio
+    // between beacon intervals (~100ms), adding up to 100ms wake latency on
+    // every outgoing packet. For a permanently-on NTRIP station this is
+    // pure overhead — disable it entirely.
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 }
 
 wifi_sta_list_t *wifi_ap_sta_list() {
