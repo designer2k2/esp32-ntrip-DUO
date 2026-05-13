@@ -38,6 +38,7 @@
 #include <lwip/sockets.h>
 #include <esp_timer.h>
 #include <esp_system.h>
+#include "driver/temp_sensor.h"
 #include "web_server.h"
 #include "uart.h"
 
@@ -1063,6 +1064,12 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
         }
     }
 
+    // Internal chip temperature
+    float chip_temp_c = 0.0f;
+    if (temp_sensor_read_celsius(&chip_temp_c) == ESP_OK) {
+        cJSON_AddNumberToObject(root, "chip_temp_c", chip_temp_c);
+    }
+
     return json_response(req, root);
 }
 
@@ -1150,5 +1157,11 @@ static httpd_handle_t web_server_start(void)
 
 void web_server_init() {
     www_spiffs_init();
+
+    // Internal temperature sensor (ESP32 built-in, ±5°C accuracy)
+    temp_sensor_config_t tsens = TSENS_CONFIG_DEFAULT();
+    temp_sensor_set_config(tsens);
+    temp_sensor_start();
+
     web_server_start();
 }
