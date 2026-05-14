@@ -1,0 +1,4 @@
+# Build timestamp excluded from app description SHA256.
+# This makes builds deterministic: same source = same binary SHA256,
+# so idf.py coredump-info works without needing the exact original ELF.
+CONFIG_APP_EXCLUDE_TIMESTAMP_FROM_IDFVERSION=y
