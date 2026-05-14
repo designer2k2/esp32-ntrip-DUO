@@ -86,14 +86,14 @@ www/
 | Task                     | Stack  | Priority | Notes                                  |
 |--------------------------|--------|----------|----------------------------------------|
 | `ntrip_server_task`      | 8192   | 5        | Main NTRIP loop, suspends after connect |
-| `ntrip_server_sleep_task`| 4096   | 5        | Monitors UART keepalive, wakes server  |
+| `ntrip_server_sl`        | 6144   | 5        | Monitors UART keepalive, wakes server  |
 | `ntrip_server_2_task`    | 8192   | 5        | Identical for second caster            |
-| `ntrip_server_2_sleep_task` | 4096 | 5      | Same as above                          |
+| `ntrip_server_2_sl`      | 6144   | 5        | Same as above                          |
 | `wifi_sta_reconnect`     | 4096   | 0        | WiFi reconnect on disconnect           |
 | `reset_button_task`      | 4096   | 0        | GPIO0 long-press factory reset         |
 | `app_main`               | —      | —        | Becomes heap watchdog loop             |
 
-**Stack size warning:** `log_vprintf()` in `log.c` allocates `char buffer[512]` on the stack on every ESP_LOG* call. Tasks that log must have sufficient stack — minimum 4096 bytes for any task using ESP_LOGX macros.
+**Stack size warning:** `log_vprintf()` in `log.c` allocates `char buffer[512]` on the stack on every ESP_LOG* call. Tasks that log must have sufficient stack — minimum 4096 bytes for any task using ESP_LOGX macros. Tasks with multiple log call sites or deeper call stacks need 6144+. The sleep tasks were sized up to 6144 after a confirmed stack overflow crash (core dump 2026-05-14).
 
 ### NTRIP server flow
 

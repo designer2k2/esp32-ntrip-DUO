@@ -120,7 +120,7 @@ static void ntrip_server_task(void *ctx) {
     sock_mutex = xSemaphoreCreateMutex();
     server_event_group = xEventGroupCreate();
     uart_register_read_handler(ntrip_server_uart_handler);
-    xTaskCreate(ntrip_server_sleep_task, "ntrip_server_sleep_task", 4096, NULL, TASK_PRIORITY_INTERFACE, &sleep_task);
+    xTaskCreate(ntrip_server_sleep_task, "ntrip_server_2_sl", 6144, NULL, TASK_PRIORITY_INTERFACE, &sleep_task);
 
     config_color_t status_led_color = config_get_color(CONF_ITEM(KEY_CONFIG_NTRIP_SERVER_2_COLOR));
     if (status_led_color.rgba != 0) status_led = status_led_add(status_led_color.rgba, STATUS_LED_FADE, 500, 2000, 0);
