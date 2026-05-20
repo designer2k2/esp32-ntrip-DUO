@@ -281,9 +281,8 @@ static esp_err_t ota_page_handler(httpd_req_t *req) {
     const esp_app_desc_t *app_desc = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
-    if (next == running) {
-        next = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
-    }
+    bool needs_reboot_first = (next != NULL && running != NULL &&
+                               next->address == running->address);
 
     char html[2048];
     snprintf(html, sizeof(html),
@@ -293,10 +292,11 @@ static esp_err_t ota_page_handler(httpd_req_t *req) {
         "#status{margin-top:16px;font-weight:bold}"
         "#bar{width:100%%;height:20px;background:#eee;border-radius:4px;margin-top:8px;display:none}"
         "#fill{height:100%%;width:0;background:#4caf50;border-radius:4px;transition:width 0.2s}"
+        ".warn{background:#fff3cd;border:1px solid #ffc107;padding:10px;border-radius:4px;margin:10px 0}"
         "</style></head><body>"
         "<h2>Firmware Update</h2>"
         "<p>Running: <b>%s</b> on partition <b>%s</b></p>"
-        "<p>Update target: <b>%s</b></p>"
+        "%s"
         "<input type='file' id='f' accept='.bin'><br>"
         "<button onclick='upload()'>Flash Firmware</button>"
         "<div id='bar'><div id='fill'></div></div>"
@@ -316,7 +316,7 @@ static esp_err_t ota_page_handler(httpd_req_t *req) {
         "fill.style.width=p+'%%';s.textContent='Uploading... '+p+'%%';}"
         "};"
         "xhr.onload=function(){"
-        "if(xhr.status==200){s.textContent='Done! Rebooting... reconnect in ~10 seconds.';fill.style.background='#4caf50';}"
+        "if(xhr.status==200){s.textContent=xhr.responseText+' Reconnect in ~10 seconds.';fill.style.background='#4caf50';}"
         "else{s.textContent='Error: '+xhr.responseText;fill.style.background='#f44336';}"
         "};"
         "xhr.onerror=function(){s.textContent='Upload failed (connection lost)';};"
@@ -327,7 +327,10 @@ static esp_err_t ota_page_handler(httpd_req_t *req) {
         "</script></body></html>",
         app_desc->version,
         running ? running->label : "unknown",
-        next ? next->label : "none - repartition required"
+        needs_reboot_first
+            ? "<div class='warn'>&#9888; Running from <b>ota_0</b>. "
+              "Uploading will reboot the device to factory first, then you must upload again to complete the update.</div>"
+            : "<p>Update target: <b>ota_0</b></p>"
     );
 
     httpd_resp_set_type(req, "text/html");
@@ -468,19 +471,26 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
     }
 
     // With only one OTA slot (ota_0), esp_ota_get_next_update_partition()
-    // returns ota_0 even when that IS the running partition — esp_ota_begin()
-    // would fail with ESP_ERR_OTA_PARTITION_CONFLICT.  Fall back to the
-    // factory partition so OTA alternates: factory → ota_0 → factory → ...
+    // returns ota_0 even when that IS the running partition.
+    // esp_ota_begin() refuses to write to the running partition AND refuses
+    // to write to the factory partition (ESP_ERR_INVALID_ARG — it only accepts
+    // ota_x subtypes). The only way out: reboot back to factory first so that
+    // ota_0 is free, then the user retries OTA normally.
     const esp_partition_t *running_part = esp_ota_get_running_partition();
-    if (ota_partition == running_part) {
-        ota_partition = esp_partition_find_first(ESP_PARTITION_TYPE_APP,
+    if (ota_partition->address == running_part->address) {
+        const esp_partition_t *factory_part = esp_partition_find_first(ESP_PARTITION_TYPE_APP,
                 ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
-        if (ota_partition == NULL) {
+        if (factory_part == NULL) {
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                    "Running partition is the only OTA slot and no factory partition found");
+                    "Running from ota_0 and no factory partition found — cannot OTA");
             return ESP_FAIL;
         }
-        ESP_LOGI(TAG, "OTA: running from ota_0, writing to factory partition");
+        ESP_LOGW(TAG, "OTA: running from ota_0, rebooting to factory to free ota_0 as update target");
+        esp_ota_set_boot_partition(factory_part);
+        httpd_resp_sendstr(req, "Device rebooting to factory partition. Wait 10 seconds, then retry OTA.");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+        return ESP_OK;
     }
 
     ESP_LOGI(TAG, "OTA update starting: %d bytes -> partition '%s'",
@@ -489,7 +499,7 @@ static esp_err_t ota_upload_handler(httpd_req_t *req) {
     esp_ota_handle_t ota_handle;
     esp_err_t err = esp_ota_begin(ota_partition, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "OTA begin failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "OTA begin failed: %s (0x%x)", esp_err_to_name(err), err);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
         return ESP_FAIL;
     }
